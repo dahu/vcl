@@ -1,20 +1,9 @@
-let vcl#state = {
-      \  'OK'       : 'OK'
-      \, 'ERR'      : 'ERR'
-      \, 'RETURN'   : 'RETURN'
-      \, 'BREAK'    : 'BREAK'
-      \, 'CONTINUE' : 'CONTINUE'
-      \}
+" Vim Control Language (a tiny TCL-ish for Vim)
+" Barry Arthur, April 2015
+" Ported from http://antirez.com/picol/picol.c.txt
 
-let vcl#token = {
-      \  'ESC' : 'ESC'
-      \, 'STR' : 'STR'
-      \, 'CMD' : 'CMD'
-      \, 'VAR' : 'VAR'
-      \, 'SEP' : 'SEP'
-      \, 'EOL' : 'EOL'
-      \, 'EOF' : 'EOF'
-      \}
+let vcl#state = { 'OK' : 'OK', 'ERR' : 'ERR', 'RETURN' : 'RETURN', 'BREAK' : 'BREAK', 'CONTINUE' : 'CONTINUE' }
+let vcl#token = { 'ESC' : 'ESC', 'STR' : 'STR', 'CMD' : 'CMD', 'VAR' : 'VAR', 'SEP' : 'SEP', 'EOL' : 'EOL', 'EOF' : 'EOF' }
 
 "
 " Parser
@@ -259,10 +248,6 @@ function! vcl#Interpreter()
   let i.commands = {}
   let i.result = ''
 
-  " func i.set_result(s)
-  "   let self.result = a:s
-  " endfunc
-
   func i.get_var(name)
     return get(self.call_frame.vars, a:name, {})
   endfunc
@@ -307,9 +292,6 @@ function! vcl#Interpreter()
         break
       endif
       let t = p.token()
-      echom t
-      echom p.type
-      echom string(args)
       if p.type == g:vcl#token.VAR
         let v = self.get_var(t)
         if empty(v)
@@ -341,7 +323,7 @@ function! vcl#Interpreter()
             throw 'VCL Interp (ERROR): No such command ' . args[0]
             return g:vcl#state.ERR
           endif
-          let retcode = call(c.func, [args, c.priv_data], c)
+          let retcode = call(c.func, [args, c.priv_data], self)
           if retcode != g:vcl#state.OK
             return g:vcl#state.ERR
           endif
@@ -361,71 +343,126 @@ function! vcl#Interpreter()
     endwhile
   endfunc
 
+  """ Commands
+
+  func i.command_math(args, priv_data)
+    let args = a:args
+    if len(args) != 3
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
+    endif
+    let a = str2nr(args[1])
+    let b = str2nr(args[2])
+    let op = args[0]
+    if op == '+'
+      let c = a + b
+    elseif op == '-'
+      let c = a - b
+    elseif op == '*'
+      let c = a * b
+    elseif op == '/'
+      let c = a / b
+    elseif op == '%'
+      let c = a % b
+    elseif op == '>'
+      let c = a > b
+    elseif op == '>='
+      let c = a >= b
+    elseif op == '<'
+      let c = a < b
+    elseif op == '<='
+      let c = a <= b
+    elseif op == '=='
+      let c = a == b
+    elseif op == '!='
+      let c = a != b
+    else
+      let c = 0
+    endif
+    let self.result = c
+    return g:vcl#state.OK
+  endfunc
+
+  func i.register_core_commands()
+    for op in [ '+', '-', '*', '/', '%', '>', '>=', '<', '<=', '==', '!=' ]
+        call self.set_command(op, self.command_math, {})
+    endfor
+    " call self.set_command("set"      , self.command_set       , {})
+    " call self.set_command("puts"     , self.command_puts      , {})
+    " call self.set_command("if"       , self.command_if        , {})
+    " call self.set_command("while"    , self.command_while     , {})
+    " call self.set_command("break"    , self.command_ret_codes , {})
+    " call self.set_command("continue" , self.command_ret_codes , {})
+    " call self.set_command("proc"     , self.command_proc      , {})
+    " call self.set_command("return"   , self.command_return    , {})
+  endfunc
+
+  call i.register_core_commands()
   return i
 endfunc
 
+"
+" Test
+"
+
+if expand('%:p') == expand('<sfile>:p')
+
   "
-  " Test
+  " Parser
   "
 
-  if expand('%:p') == expand('<sfile>:p')
+  let p = vcl#Parser("   \t\t\t\n\n\n\r\r\r")
+  echo [p.parse_separator(), p.len, p.pos, 12, p.end, 11]
 
-    "
-    " Parser
-    "
+  let p = vcl#Parser(";\n")
+  echo [p.parse_eol(), p.len, p.pos, 2, p.end, 1]
 
-    let p = vcl#Parser("   \t\t\t\n\n\n\r\r\r")
-    echo [p.parse_separator(), p.len, p.pos, 12, p.end, 11]
+  let p = vcl#Parser('[set x]')
+  echo [p.parse_command(), p.len, p.pos, 7, p.end, 5]
 
-    let p = vcl#Parser(";\n")
-    echo [p.parse_eol(), p.len, p.pos, 2, p.end, 1]
+  let p = vcl#Parser('$')
+  echo [p.parse_variable(), p.len, p.pos, 1, p.end, 0]
 
-    let p = vcl#Parser('[set x]')
-    echo [p.parse_command(), p.len, p.pos, 7, p.end, 5]
+  let p = vcl#Parser('$foo')
+  echo [p.parse_variable(), p.len, p.pos, 4, p.end, 3]
 
-    let p = vcl#Parser('$')
-    echo [p.parse_variable(), p.len, p.pos, 1, p.end, 0]
+  let p = vcl#Parser('{test brace}')
+  echo [p.parse_brace(), p.len, p.pos, 12, p.end, 10]
 
-    let p = vcl#Parser('$foo')
-    echo [p.parse_variable(), p.len, p.pos, 4, p.end, 3]
+  let p = vcl#Parser('"test string"')
+  echo [p.parse_string(), p.len, p.pos, 13, p.end, 11]
 
-    let p = vcl#Parser('{test brace}')
-    echo [p.parse_brace(), p.len, p.pos, 12, p.end, 10]
+  let p = vcl#Parser("test comment\n")
+  echo [p.parse_comment(), p.len, p.pos, 12, p.end, 0]
+  echo [p.parse_eol(), p.len, p.pos, 13, p.end, 12]
 
-    let p = vcl#Parser('"test string"')
-    echo [p.parse_string(), p.len, p.pos, 13, p.end, 11]
-
-    let p = vcl#Parser("test comment\n")
-    echo [p.parse_comment(), p.len, p.pos, 12, p.end, 0]
-    echo [p.parse_eol(), p.len, p.pos, 13, p.end, 12]
-
-    let prog = 'proc square {x} { * $x $x }'
-    echo prog
-    let p = vcl#Parser(prog)
+  let prog = 'proc square {x} { * $x $x }'
+  echo prog
+  let p = vcl#Parser(prog)
+  call p.get_next_token()
+  while p.type != vcl#token.EOF
+    echo [p.type, p.token()]
     call p.get_next_token()
-    while p.type != vcl#token.EOF
-      echo [p.type, p.token()]
-      call p.get_next_token()
-    endwhile
+  endwhile
 
-    "
-    " Interpreter
-    "
+  "
+  " Interpreter
+  "
 
-    let i = vcl#Interpreter()
+  let i = vcl#Interpreter()
 
-    echo i.set_var('foo', 10)
-    echo i.get_var('foo')
+  echo i.set_var('foo', 10)
+  echo i.get_var('foo')
 
-    function! vcl#foo(args, data)
-      echom "foo!"
-    endfunction
+  function! vcl#foo(args, data)
+    echom "foo!"
+  endfunction
 
-    echo i.set_command('foo', 'vcl#foo', {})
-    echo i.get_command('foo')
+  echo i.set_command('foo', 'vcl#foo', {})
+  echo i.get_command('foo')
 
-    let prog = 'foo'
-    call i.eval(prog)
+  let prog = '* 6 [+ 5 2]'
+  call i.eval(prog)
+  echo i.result
 
-  endif
+endif
 
