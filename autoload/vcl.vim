@@ -347,43 +347,38 @@ function! vcl#Interpreter()
 
   func i.command_math(args, priv_data)
     let args = a:args
-    if len(args) != 3
+    if (args[0] == '?:' && len(args) != 4) || (args[0] != '?:' && len(args) != 3)
       throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
     endif
-    let a = str2nr(args[1])
-    let b = str2nr(args[2])
-    let op = args[0]
-    if op == '+'
-      let c = a + b
-    elseif op == '-'
-      let c = a - b
-    elseif op == '*'
-      let c = a * b
-    elseif op == '/'
-      let c = a / b
-    elseif op == '%'
-      let c = a % b
-    elseif op == '>'
-      let c = a > b
-    elseif op == '>='
-      let c = a >= b
-    elseif op == '<'
-      let c = a < b
-    elseif op == '<='
-      let c = a <= b
-    elseif op == '=='
-      let c = a == b
-    elseif op == '!='
-      let c = a != b
-    else
-      let c = 0
+    if index(['+', '-', '*', '/', '%'], args[0]) != -1
+      if args[1] !~ '[0-9.+-]\+'
+        throw 'VCL Interp (ERROR): Operator ' . args[0] . ' given argument: ' . args[1]
+      endif
+      if args[2] !~ '[0-9.+-]\+'
+        throw 'VCL Interp (ERROR): Operator ' . args[0] . ' given argument: ' . args[2]
+      endif
     endif
-    let self.result = c
+    if args[0] == '?:'
+      let self.result = eval(args[1] . ' ? ' . args[2] . ' : ' . args[3])
+    else
+      let self.result = eval(args[1] . args[0] . args[2])
+    endif
     return g:vcl#state.OK
   endfunc
 
   func i.register_core_commands()
-    for op in [ '+', '-', '*', '/', '%', '>', '>=', '<', '<=', '==', '!=' ]
+    for op in ['+', '-', '*', '/', '%', '||', '&&', '.', '?:'
+          \, '>'     , '>?'     , '>#'
+          \, '>='    , '>=?'    , '>=#'
+          \, '<'     , '<?'     , '<#'
+          \, '<='    , '<=?'    , '<=#'
+          \, '=='    , '==?'    , '==#'
+          \, '!='    , '!=?'    , '!=#'
+          \, '=~'    , '=~?'    , '=~#'
+          \, '!~'    , '!~?'    , '!~#'
+          \, 'is'    , 'is?'    , 'is#'
+          \, 'isnot' , 'isnot?' , 'isnot#'
+          \]
         call self.set_command(op, self.command_math, {})
     endfor
     " call self.set_command("set"      , self.command_set       , {})
@@ -460,7 +455,27 @@ if expand('%:p') == expand('<sfile>:p')
   echo i.set_command('foo', 'vcl#foo', {})
   echo i.get_command('foo')
 
-  let prog = '* 6 [+ 5 2]'
+  let prog = '* 0x10 [+ 4 2]'
+  call i.eval(prog)
+  echo i.result
+
+  let prog = '|| 1 0'
+  call i.eval(prog)
+  echo i.result
+
+  let prog = '|| 0 0'
+  call i.eval(prog)
+  echo i.result
+
+  let prog = '=~ {"yes"} {"y.."}'
+  call i.eval(prog)
+  echo i.result
+
+  let prog = '?: 0 {"yes"} {"no"}'
+  call i.eval(prog)
+  echo i.result
+
+  let prog = '. {"yes"} {"no"}'
   call i.eval(prog)
   echo i.result
 
