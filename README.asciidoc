@@ -1,0 +1,11 @@
+== VCL
+
+__Vim Control Language (a tiny TCL-ish for Vim)__
+
+=== :VCL
+
+  :VCL set x 10
+  :VCL puts $x
+  :VCL proc square {x} {* $x $x}
+  :VCL puts [square 8]
+
