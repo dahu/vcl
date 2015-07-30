@@ -232,6 +232,7 @@ function! vcl#Parser(text)
     return strpart(self.text, self.start, (self.end - self.start + 1))
   endfunc
 
+
   return p
 endfunc
 
@@ -241,15 +242,15 @@ endfunc
 
 function! vcl#Interpreter()
   let i = {}
+  " TODO: is level needed?
   let i.level = 0
-  let i.call_frame = {}
-  let i.call_frame.vars = {}
-  let i.call_frame.parent = {}
+  let i.call_frames = [{}]
+  let i.call_frames[0].vars = {}
   let i.commands = {}
   let i.result = ''
 
   func i.get_var(name)
-    return get(self.call_frame.vars, a:name, {})
+    return get(self.call_frames[-1].vars, a:name, {})
   endfunc
 
   func i.set_var(name, val)
@@ -259,7 +260,7 @@ function! vcl#Interpreter()
     else
       let v.name = a:name
       let v.val = a:val
-      call extend(self.call_frame.vars, {a:name : v})
+      call extend(self.call_frames[-1].vars, {a:name : v})
     endif
     return g:vcl#state.OK
   endfunc
@@ -280,6 +281,14 @@ function! vcl#Interpreter()
     return g:vcl#state.OK
   endfunc
 
+  func i.drop_call_frame()
+    if len(self.call_frames) < 1
+      throw 'VCL Interp (ERROR): Call-frame drop failed; at last frame.'
+    else
+      call remove(self.call_frames, -1)
+    endif
+  endfunc
+
 
   func i.eval(text)
     let p = vcl#Parser(a:text)
@@ -292,28 +301,28 @@ function! vcl#Interpreter()
         break
       endif
       let t = p.token()
+      let t_orig = t
       if p.type == g:vcl#token.VAR
         let v = self.get_var(t)
+        " echom 'var=' . t . ', val=' . string(v)
         if empty(v)
           throw 'VCL Interp (ERROR): No such variable ' . t
           return g:vcl#state.ERR
         endif
         let t = v.val
       elseif p.type == g:vcl#token.CMD
-        " try
         let retcode = self.eval(t)
-        " catch
         if retcode != g:vcl#state.OK
           return retcode
         endif
-        " endtry
         let t = self.result
       elseif p.type == g:vcl#token.ESC
         " TODO: escape handling missing!
+        " echom t . ' is not an escape!'
       elseif p.type == g:vcl#token.SEP
-        let prev_type = p.type
         continue
       endif
+
       " We have a complete command + args. Call it!
       if p.type == g:vcl#token.EOL
         let prev_type = p.type
@@ -323,8 +332,10 @@ function! vcl#Interpreter()
             throw 'VCL Interp (ERROR): No such command ' . args[0]
             return g:vcl#state.ERR
           endif
+          " echom 'calling ' . string(c) . ' with ' . string(args)
           let retcode = call(c.func, [args, c.priv_data], self)
-          if retcode != g:vcl#state.OK
+          " echom 'eval retcode=' . string(retcode)
+          if (retcode != g:vcl#state.OK) && (retcode != g:vcl#state.RETURN) && (retcode != g:vcl#state.CONTINUE)
             return g:vcl#state.ERR
           endif
           " Prepare for the next command
@@ -334,36 +345,171 @@ function! vcl#Interpreter()
       endif
 
       " We have a new token, append to the previous or as new arg?
-      if prev_type == g:vcl#token.SEP || prev_type == g:vcl#token.EOL
+      if index([g:vcl#token.SEP, g:vcl#token.EOL], prev_type) != -1
         call add(args, t)
       else     " Interpolation
-        let args[-1] = t
+        let args[-1] .= t
       endif
       let prev_type = p.type
     endwhile
+    " XXX tidy this up -- retcode is not declared before while loop
+    return retcode
   endfunc
 
   """ Commands
 
   func i.command_math(args, priv_data)
     let args = a:args
-    if (args[0] == '?:' && len(args) != 4) || (args[0] != '?:' && len(args) != 3)
+    if (args[0] == '?:' && len(args) != 4)
+          \ || (args[0] != '?:' && args[0] != '.' && len(args) != 3)
       throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
     endif
     if index(['+', '-', '*', '/', '%'], args[0]) != -1
-      if args[1] !~ '[0-9.+-]\+'
+      if args[1] !~ '[0-9+-]\+'
         throw 'VCL Interp (ERROR): Operator ' . args[0] . ' given argument: ' . args[1]
       endif
-      if args[2] !~ '[0-9.+-]\+'
+      if args[2] !~ '[0-9+-]\+'
         throw 'VCL Interp (ERROR): Operator ' . args[0] . ' given argument: ' . args[2]
       endif
     endif
     if args[0] == '?:'
       let self.result = eval(args[1] . ' ? ' . args[2] . ' : ' . args[3])
     else
+      if args[0] == '.'
+        if len(args) == 2
+          call add(args, '""')
+        endif
+      endif
       let self.result = eval(args[1] . args[0] . args[2])
     endif
     return g:vcl#state.OK
+  endfunc
+
+  func i.command_set(args, priv_data)
+    let args = a:args
+    if len(args) != 3
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
+    endif
+    call self.set_var(args[1], args[2])
+    let self.result = args[2]
+    return g:vcl#state.OK
+  endfunc
+
+  func i.command_puts(args, priv_data)
+    let args = a:args
+    if len(args) != 2
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
+    endif
+    let self.result = args[1]
+    echo printf("%s\n", self.result)
+    return g:vcl#state.OK
+  endfunc
+
+  func i.command_if(args, priv_data)
+    let args = a:args
+    if len(args) != 3 && len(args) != 5
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
+    endif
+    let retcode = self.eval(args[1])
+    if retcode != g:vcl#state.OK
+      return retcode
+    endif
+    if ! empty(self.result) && self.result != 0
+      return self.eval(args[2])
+    elseif len(args) == 5
+      return self.eval(args[4])
+    else
+      return g:vcl#state.OK
+    endif
+  endfunc
+
+  func i.command_while(args, priv_data)
+    let args = a:args
+    if len(args) != 3
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
+    endif
+    while 1
+      let retcode = self.eval(args[1])
+      if retcode != g:vcl#state.OK
+        return retcode
+      endif
+      if ! empty(self.result) && self.result
+        let retcode = self.eval(args[2])
+        if retcode == g:vcl#state.CONTINUE
+          continue
+        elseif retcode == g:vcl#state.OK
+          continue
+        elseif retcode == g:vcl#state.BREAK
+          return g:vcl#state.OK
+        else
+          " XXX: Never reached?
+          return retcode
+        endif
+      else
+        return g:vcl#state.OK
+      endif
+    endwhile
+  endfunc
+
+  func i.command_ret_codes(args, priv_data)
+    let args = a:args
+    if len(args) != 1
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
+    endif
+    if args[0] == "break"
+      return g:vcl#state.BREAK
+    elseif args[0] == "continue"
+      return g:vcl#state.CONTINUE
+    else
+      return g:vcl#state.OK
+    endif
+  endfunc
+
+  func i.command_call_proc(args, priv_data)
+    let arg_list   = a:priv_data[0]
+    let body       = a:priv_data[1]
+    let arity = 0
+    let done  = 0
+    let errcode  = g:vcl#state.OK
+
+    let real_args = a:args
+    if len(real_args) != (len(arg_list) + 1)
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . real_args[0] . '; expected ' . len(arg_list)
+    endif
+
+    call add(self.call_frames, {})
+    let self.call_frames[-1].vars = {}
+    let arg_num = 0
+    for a in a:args[1:]
+      call self.set_var(arg_list[arg_num], a)
+      let arg_num += 1
+    endfor
+
+    let retcode = self.eval(body)
+    if retcode == g:vcl#state.RETURN
+      let retcode = g:vcl#state.OK
+    endif
+
+    call self.drop_call_frame()
+    return retcode
+  endfunc
+
+  func i.command_proc(args, priv_data)
+    let args = a:args
+    if len(args) != 4
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
+    endif
+    let proc_data = [args[2], args[3]]
+    return self.set_command(args[1], self.command_call_proc, proc_data)
+  endfunc
+
+  func i.command_return(args, priv_data)
+    let args = a:args
+    if len(args) != 2
+      throw 'VCL Interp (ERROR): Wrong number of args for ' . args[0]
+    endif
+    let self.result = len(args) == 2 ? args[1] : ''
+    return g:vcl#state.RETURN
   endfunc
 
   func i.register_core_commands()
@@ -379,21 +525,24 @@ function! vcl#Interpreter()
           \, 'is'    , 'is?'    , 'is#'
           \, 'isnot' , 'isnot?' , 'isnot#'
           \]
-        call self.set_command(op, self.command_math, {})
+      call self.set_command(op, self.command_math, {})
     endfor
-    " call self.set_command("set"      , self.command_set       , {})
-    " call self.set_command("puts"     , self.command_puts      , {})
-    " call self.set_command("if"       , self.command_if        , {})
-    " call self.set_command("while"    , self.command_while     , {})
-    " call self.set_command("break"    , self.command_ret_codes , {})
-    " call self.set_command("continue" , self.command_ret_codes , {})
-    " call self.set_command("proc"     , self.command_proc      , {})
-    " call self.set_command("return"   , self.command_return    , {})
+    call self.set_command("set"      , self.command_set       , {})
+    call self.set_command("puts"     , self.command_puts      , {})
+    call self.set_command("if"       , self.command_if        , {})
+    call self.set_command("while"    , self.command_while     , {})
+    call self.set_command("break"    , self.command_ret_codes , {})
+    call self.set_command("continue" , self.command_ret_codes , {})
+    call self.set_command("proc"     , self.command_proc      , {})
+    call self.set_command("return"   , self.command_return    , {})
   endfunc
 
   call i.register_core_commands()
   return i
 endfunc
+
+let VCL = vcl#Interpreter()
+command! -nargs=+ VCL call VCL.eval(<q-args>) | echo VCL.result
 
 "
 " Test
@@ -431,7 +580,6 @@ if expand('%:p') == expand('<sfile>:p')
   echo [p.parse_eol(), p.len, p.pos, 13, p.end, 12]
 
   let prog = 'proc square {x} { * $x $x }'
-  echo prog
   let p = vcl#Parser(prog)
   call p.get_next_token()
   while p.type != vcl#token.EOF
@@ -444,6 +592,8 @@ if expand('%:p') == expand('<sfile>:p')
   "
 
   let i = vcl#Interpreter()
+
+  echo i.eval('== 1 1')
 
   echo i.set_var('foo', 10)
   echo i.get_var('foo')
@@ -479,5 +629,38 @@ if expand('%:p') == expand('<sfile>:p')
   call i.eval(prog)
   echo i.result
 
-endif
+  let prog = 'puts "this is a string"'
+  call i.eval(prog)
+  echo i.result
 
+  let prog = 'set x 10; puts "x is $x now"'
+  call i.eval(prog)
+  echo i.result
+
+  let prog = 'set x 1; if {== 10 $x} {puts "yes"} else {puts "no"}'
+  call i.eval(prog)
+  echo i.result
+
+  let prog = 'set x [if {== 10 1} {puts "yes"} else {puts "no"}]; puts $x'
+  call i.eval(prog)
+  echo i.result
+
+  let prog = 'set y {"vim"}; set x [if {== &ft $y} {. &ft {"yes"}} else {. &ft {"no"}}]; puts $x'
+  call i.eval(prog)
+  echo i.result
+
+  let prog  = 'set a 1;'
+  let prog .= 'while {<= $a 10} {'
+  let prog .= '  if {== $a 5} {'
+  let prog .= '    puts {Skipping five!};'
+  let prog .= '    set a [+ $a 1];'
+  let prog .= '    continue'
+  let prog .= '  };'
+  let prog .= '  set a [+ $a 1]'
+  let prog .= '}'
+  exe 'VCL ' . prog
+
+  VCL proc square {x} {return [* $x $x]}
+  VCL square 8
+  VCL square [square 8]
+endif
